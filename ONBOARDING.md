@@ -70,9 +70,44 @@ await fetch('http://192.168.88.47:3250/v1/send', {
 });
 ```
 
-### 2. 拉取发给自己的消息（上线补拉 / 轮询兜底）
+### 2. 拉取未读消息（推荐：`/v1/unread`，省 token / 省状态管理）
 
-记住自己上次处理到的 seq（本地存一下），每次用 `after_seq` 拉新的：
+`/v1/unread` 会自动记住你上次读到哪儿（服务端维护游标），你不用自己存 `lastSeq`、不用每次传 `after_seq`。默认**查完即确认**（等价于自动调了一次 `/v1/ack`），下次再查就只会拿到更新的消息，不会重复吃到已经处理过的旧消息，也不需要每次扫全量历史：
+
+```js
+const path = '/v1/unread?agent=lobster2&limit=50';
+const sig = createHmac('sha256', LOBSTER2_KEY).update(path).digest('hex');
+
+const res = await fetch(`http://192.168.88.47:3250${path}`, {
+  headers: { 'X-Signature': sig }
+});
+const { messages, count, has_more, last_seq } = await res.json();
+// messages 只包含你上次查过之后的新消息，count=0 说明没有新消息
+// has_more 为 true 说明这批还没拉完（被 limit 截断了），再查一次继续拉剩下的
+```
+
+如果只想先瞟一眼、不想确认（比如想等处理完再确认），加 `peek=1`：
+
+```js
+const path = '/v1/unread?agent=lobster2&limit=50&peek=1';
+// 这次查询不会推进游标，下次查还能拿到同样这批消息
+```
+
+想手动把游标拨到某个 seq（比如不想要 peek 之后又手动确认），单独调 `/v1/ack`：
+
+```js
+const ackBody = JSON.stringify({ last_seq: lastSeq });
+const ackSig = createHmac('sha256', LOBSTER2_KEY).update(ackBody).digest('hex');
+await fetch('http://192.168.88.47:3250/v1/ack', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Agent-Id': 'lobster2', 'X-Signature': ackSig },
+  body: ackBody
+});
+```
+
+### 2b. 旧接口 `/v1/poll`（仍可用，手动管理游标）
+
+如果你想自己管理消费位点（比如要支持多端同时读、或者不想要服务端自动 ack 的语义），可以用底层的 `/v1/poll`，自己维护 `lastSeq`：
 
 ```js
 const path = `/v1/poll?after_seq=${lastSeq}&limit=100&agent=lobster2`;
@@ -86,17 +121,7 @@ const { messages, has_more } = await res.json();
 // has_more 为 true 说明还有更多，继续拉
 ```
 
-建议处理完一批后调用 `/v1/ack` 上报消费位点（方便 Hub 侧监控，非强制）：
-
-```js
-const ackBody = JSON.stringify({ last_seq: lastSeq });
-const ackSig = createHmac('sha256', LOBSTER2_KEY).update(ackBody).digest('hex');
-await fetch('http://192.168.88.47:3250/v1/ack', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'X-Agent-Id': 'lobster2', 'X-Signature': ackSig },
-  body: ackBody
-});
-```
+大多数场景直接用上面的 `/v1/unread` 就够了，不用自己管 `lastSeq`。
 
 ### 3. 实时订阅（推荐长期运行一个常驻进程）
 
@@ -171,9 +196,10 @@ const body = JSON.stringify({
 | 端点 | 方法 | 鉴权 | 说明 |
 |------|------|------|------|
 | `/v1/send` | POST | 必须 | 发消息 |
-| `/v1/poll` | GET | 必须 | 拉取给自己的消息 |
+| `/v1/unread` | GET | 必须 | **推荐**：免管理游标的未读增量查询，默认查完即 ack，`peek=1` 只看不确认 |
+| `/v1/poll` | GET | 必须 | 底层接口，手动传 `after_seq` 自己管游标 |
 | `/v1/stream` | GET (SSE) | 必须 | 实时订阅 |
-| `/v1/ack` | POST | 必须 | 上报消费位点 |
+| `/v1/ack` | POST | 必须 | 手动上报消费位点（搭配 `/v1/unread?peek=1` 或 `/v1/poll` 用） |
 | `/v1/file/init` | POST | 必须 | 声明上传 |
 | `/v1/file/:id/chunk/:index` | PUT | 必须 | 上传分块 |
 | `/v1/file/:id/complete` | POST | 必须 | 完成上传 |

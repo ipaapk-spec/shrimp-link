@@ -211,6 +211,45 @@ app.post('/v1/ack', async (req, reply) => {
   return { ok: true };
 });
 
+// ---- /v1/unread：免管理游标的未读增量查询 ----
+// 自动用该 agent 在 acks 表里记的 last_seq 当起点，只返回之后的新消息；
+// 默认查完就自动把 last_seq 推进到查到的最大 seq（等价于查后即确认），
+// 传 peek=1 则只看不确认，方便先瞟一眼再决定要不要处理。
+// 目的：避免每次都要全量扫历史或手动管理 after_seq，省 token。
+app.get('/v1/unread', async (req, reply) => {
+  const agent = requireAuthQuery(req, reply);
+  if (!agent) return;
+
+  const limit = Math.min(Number(req.query.limit || 50), 200);
+  const peek = req.query.peek === '1';
+
+  const ackRow = db.prepare('SELECT last_seq FROM acks WHERE agent = ?').get(agent);
+  const afterSeq = ackRow?.last_seq ?? 0;
+
+  const rows = db.prepare(
+    `SELECT * FROM messages WHERE "to" = ? AND seq > ? ORDER BY seq ASC LIMIT ?`
+  ).all(agent, afterSeq, limit);
+
+  touchActivity(agent, 'unread');
+
+  const messages = rows.map(rowToMsg);
+  const maxSeq = messages.length ? messages[messages.length - 1].seq : afterSeq;
+
+  if (!peek && messages.length) {
+    db.prepare(`INSERT INTO acks (agent, last_seq, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(agent) DO UPDATE SET last_seq = excluded.last_seq, updated_at = excluded.updated_at`)
+      .run(agent, maxSeq, Date.now());
+  }
+
+  return {
+    messages,
+    count: messages.length,
+    has_more: messages.length === limit,
+    acked: !peek && messages.length > 0,
+    last_seq: maxSeq,
+  };
+});
+
 // ---- 文件传输 ----
 app.post('/v1/file/init', async (req, reply) => {
   const from = requireAuth(req, reply);
