@@ -2,15 +2,17 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json ./
+COPY hub/package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-COPY src ./src
-COPY public ./public
+COPY hub/src ./src
+COPY hub/public ./public
+COPY ONBOARDING.md /app/ONBOARDING.md
 
 ENV DB_PATH=/data/shrimp-link.db
 ENV FILES_DIR=/data/files
 ENV PORT=3250
+ENV ONBOARDING_PATH=/app/ONBOARDING.md
 
 VOLUME ["/data"]
 EXPOSE 3250

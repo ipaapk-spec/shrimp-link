@@ -3,9 +3,10 @@ import cors from '@fastify/cors';
 import fstatic from '@fastify/static';
 import { ulid } from 'ulid';
 import { createHash } from 'node:crypto';
-import { mkdirSync, createWriteStream, existsSync, statSync, createReadStream, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, createWriteStream, existsSync, statSync, createReadStream, readdirSync, rmSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { marked } from 'marked';
 
 import { db, nextSeq } from './db.js';
 import { verify, knownAgents, getSecret } from './auth.js';
@@ -347,6 +348,81 @@ app.get('/v1/status', async () => {
 await app.register(fstatic, {
   root: join(__dirname, '../public'),
   prefix: '/',
+});
+
+// ---- 入驻指南网页（Markdown 渲染，内网工具，明文含密钥，仅供局域网访问） ----
+const ONBOARDING_PATH = process.env.ONBOARDING_PATH || join(__dirname, '../../ONBOARDING.md');
+app.get('/onboarding', async (req, reply) => {
+  let md;
+  try {
+    md = readFileSync(ONBOARDING_PATH, 'utf-8');
+  } catch {
+    reply.code(404);
+    return '入驻指南文件未找到';
+  }
+  const html = marked.parse(md);
+  reply.type('text/html; charset=utf-8');
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>虾联入驻指南 · 龙虾二号</title>
+<style>
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 32px 20px 80px;
+    background: #0d1b1e;
+    color: #eafff9;
+    line-height: 1.7;
+  }
+  h1, h2, h3 { color: #4ad6c8; }
+  h1 { border-bottom: 2px solid #1f4348; padding-bottom: 10px; }
+  h2 { margin-top: 36px; }
+  code {
+    background: #132a2e;
+    color: #ff8f5a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #132a2e;
+    border: 1px solid #1f4348;
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+  pre code { background: none; color: #eafff9; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #1f4348;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 0.92em;
+  }
+  th { background: #132a2e; color: #4ad6c8; }
+  a { color: #ff8f5a; }
+  blockquote {
+    border-left: 3px solid #ff6b4a;
+    margin: 0;
+    padding: 6px 16px;
+    background: #132a2e;
+    border-radius: 0 8px 8px 0;
+    color: #7fa8a0;
+  }
+</style>
+</head>
+<body>
+${html}
+</body>
+</html>`;
 });
 
 app.listen({ port: PORT, host: '0.0.0.0' }, (err) => {

@@ -1,6 +1,8 @@
 services:
   shrimp-link:
-    build: .
+    build:
+      context: ..
+      dockerfile: hub/Dockerfile
     container_name: shrimp-link
     restart: unless-stopped
     ports:
