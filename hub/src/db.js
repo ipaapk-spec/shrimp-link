@@ -47,9 +47,25 @@ CREATE TABLE IF NOT EXISTS acks (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS activity (
+  agent TEXT PRIMARY KEY,
+  last_seen_at INTEGER NOT NULL,
+  last_action TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_to_seq ON messages("to", seq);
 CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq);
 `);
+
+export function touchActivity(agent, action) {
+  db.prepare(`INSERT INTO activity (agent, last_seen_at, last_action) VALUES (?, ?, ?)
+              ON CONFLICT(agent) DO UPDATE SET last_seen_at = excluded.last_seen_at, last_action = excluded.last_action`)
+    .run(agent, Date.now(), action);
+}
+
+export function getActivity() {
+  return db.prepare('SELECT * FROM activity').all();
+}
 
 export function nextSeq() {
   const row = db.prepare('UPDATE seq_counter SET value = value + 1 WHERE id = 1 RETURNING value').get();

@@ -8,7 +8,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
 
-import { db, nextSeq } from './db.js';
+import { db, nextSeq, touchActivity, getActivity } from './db.js';
 import { verify, knownAgents, getSecret } from './auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -69,6 +69,8 @@ app.post('/v1/send', async (req, reply) => {
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, seq, from, to, type, in_reply_to || null, JSON.stringify(payload), ts, ts);
 
+  touchActivity(from, 'send');
+
   const msg = { id, seq, from, to, type, in_reply_to: in_reply_to || null, payload, ts };
   broadcastTo(to, msg);
   broadcastTo('*watchers*', msg); // Web UI 围观
@@ -86,6 +88,8 @@ app.get('/v1/poll', async (req, reply) => {
   const rows = db.prepare(
     `SELECT * FROM messages WHERE "to" = ? AND seq > ? ORDER BY seq ASC LIMIT ?`
   ).all(agent, afterSeq, limit);
+
+  touchActivity(agent, 'poll');
 
   return {
     messages: rows.map(rowToMsg),
@@ -130,6 +134,8 @@ app.get('/v1/stream', async (req, reply) => {
   });
   reply.raw.write(': connected\n\n');
 
+  touchActivity(agent, 'stream_connect');
+
   if (!subscribers.has(agent)) subscribers.set(agent, new Set());
   subscribers.get(agent).add(reply.raw);
 
@@ -163,6 +169,25 @@ app.get('/v1/watch', async (req, reply) => {
     clearInterval(heartbeat);
     subscribers.get('*watchers*')?.delete(reply.raw);
   });
+});
+
+// 围观页用的在线状态（不鉴权只读，复用 /v1/status 的判定逻辑）
+app.get('/v1/watch/presence', async () => {
+  const agents = knownAgents();
+  const ONLINE_WINDOW_MS = 90 * 1000;
+  const now = Date.now();
+  const activityRows = getActivity();
+  const activityMap = new Map(activityRows.map((r) => [r.agent, r]));
+
+  const presence = agents.map((agent) => {
+    const act = activityMap.get(agent);
+    const hasLiveStream = subscribers.has(agent) && subscribers.get(agent).size > 0;
+    const lastSeenAt = act?.last_seen_at ?? null;
+    const online = hasLiveStream || (lastSeenAt !== null && now - lastSeenAt < ONLINE_WINDOW_MS);
+    return { agent, online, last_seen_at: lastSeenAt, live_stream: hasLiveStream };
+  });
+
+  return { presence };
 });
 
 // 围观页历史消息（只看 chat 类型，最近 N 条，不鉴权只读）
@@ -334,12 +359,34 @@ app.get('/v1/status', async () => {
     }
   } catch { /* ignore */ }
 
+  // 在线判定：最近活跃（send/poll/stream连接任一动作）在 ONLINE_WINDOW_MS 内视为在线；
+  // 有常驻 SSE 连接的直接算在线。
+  const ONLINE_WINDOW_MS = 90 * 1000; // 90秒内有动作就算在线
+  const now = Date.now();
+  const activityRows = getActivity();
+  const activityMap = new Map(activityRows.map((r) => [r.agent, r]));
+
+  const presence = agents.map((agent) => {
+    const act = activityMap.get(agent);
+    const hasLiveStream = subscribers.has(agent) && subscribers.get(agent).size > 0;
+    const lastSeenAt = act?.last_seen_at ?? null;
+    const online = hasLiveStream || (lastSeenAt !== null && now - lastSeenAt < ONLINE_WINDOW_MS);
+    return {
+      agent,
+      online,
+      last_seen_at: lastSeenAt,
+      last_action: act?.last_action ?? null,
+      live_stream: hasLiveStream,
+    };
+  });
+
   return {
     ok: true,
     agents,
     last_seq: lastMsg.seq || 0,
     acks,
-    online: [...subscribers.keys()].filter((k) => k !== '*watchers*' && subscribers.get(k).size > 0),
+    presence,
+    online: presence.filter((p) => p.online).map((p) => p.agent),
     files_dir_bytes: diskUsage,
   };
 });
